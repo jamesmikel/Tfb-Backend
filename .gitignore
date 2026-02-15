@@ -1,0 +1,7 @@
+node_modules/
+uploads/
+CryptoMiner.js
+.env
+dist
+*.log
+.DS_Store
