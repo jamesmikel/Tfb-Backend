@@ -36,10 +36,10 @@ const JWT_SECRET = process.env.JWT_SECRET;
 app.use(cors({
   origin: (origin, callback) => {
     const allowed = [
-      "http://localhost:3000",
-      "http://localhost:5173",
-      "http://127.0.0.1:4040",
-      "https://7m3rkm.csb.app",
+      
+      "www.trusted-finance.biz"
+      
+      "https://tfb-backend-mv66.onrender.com",
       "https://trusted-finance.biz", // add your production frontend
     ];
     if (!origin || allowed.includes(origin)) {
