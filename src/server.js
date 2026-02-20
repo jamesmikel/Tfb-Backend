@@ -39,7 +39,7 @@ app.use(cors({
       
       "www.trusted-finance.biz",
       
-      "https://tfb-backend-mv66.onrender.com",
+      "https://tfb-backend-mcf5.onrender.com",
       "https://trusted-finance.biz", // add your production frontend
       undefined,
       null
