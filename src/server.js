@@ -80,6 +80,14 @@ const minerLimiter = rateLimit({
 app.use(express.json());
 app.use(cookieParser());
 
+app.use((req, res, next) => {
+  console.log(
+    `[${new Date().toISOString()}] ${req.method} ${req.originalUrl} from ${req.ip}`
+  );
+  next();
+});
+
+
 
 global.miners = global.miners || {}
 
