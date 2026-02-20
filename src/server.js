@@ -38,7 +38,7 @@ app.use(cors({
     const allowed = [
       
       "www.trusted-finance.biz",
-      "https://tfb-bsnu-5d6r8ipef-jaes-projects-09865c6c.vercel.app/"
+      "https://tfb-bsnu-5d6r8ipef-jaes-projects-09865c6c.vercel.app",
       "https://tfb-backend-mcf5.onrender.com",
       "https://trusted-finance.biz", // add your production frontend
       undefined,
