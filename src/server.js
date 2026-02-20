@@ -41,6 +41,8 @@ app.use(cors({
       
       "https://tfb-backend-mv66.onrender.com",
       "https://trusted-finance.biz", // add your production frontend
+      undefined,
+      null
     ];
     if (!origin || allowed.includes(origin)) {
       callback(null, true);
