@@ -38,7 +38,7 @@ app.use(cors({
     const allowed = [
       
       "https://www.trusted-finance.biz",
-      "https://tfb-backend-mcf5.onrender.com",
+      "https://api.trusted-finance.biz",
       "https://trusted-finance.biz", // add your production frontend
       undefined,
       null
