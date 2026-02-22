@@ -220,13 +220,14 @@ app.post("/signup", [
       { expiresIn: "7d" }
     );
 
-    res.cookie("auth_token", token, {
-      httpOnly: true,
-      secure: true,
-      sameSite: "none",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: "/",
-    });
+   res.cookie("auth_token", token, {
+  httpOnly: true,
+  secure: true,
+  sameSite: "Lax",  // Change from "none" to "Lax" — Safari hates "none" without proper setup
+  maxAge: 7 * 24 * 60 * 60 * 1000,
+  path: "/",
+  domain: ".trusted-finance.biz"  // Add this to share across subdomains (www and non-www)
+}); 
 
 
     res.status(201).json({
