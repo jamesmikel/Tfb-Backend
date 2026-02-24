@@ -313,6 +313,7 @@ app.post("/support", async (req, res) => {
 
     const data = await groqResponse.json();
     const reply = data.choices[0].message.content.trim();
+    console.log("Groq generated reply:", reply.substring(0, 200) + "...");
 
     // Optional: Send email
     await sendEmail({
@@ -329,17 +330,6 @@ app.post("/support", async (req, res) => {
   } catch (err) {
     console.error("Support error:", err);
     res.status(500).json({ error: "Failed to process message" });
-  }
-});
-app.get("/test-groq", async (req, res) => {
-  try {
-    const testRes = await fetch("https://api.groq.com/openai/v1/models", {
-      headers: { "Authorization": `Bearer ${process.env.GROQ_API_KEY}` }
-    });
-    const data = await testRes.json();
-    res.json({ success: true, models: data });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
 });
 
