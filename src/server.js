@@ -288,8 +288,6 @@ app.post("/support", async (req, res) => {
   const { name, email, message } = req.body;
 
   try {
-    const messages = createGroqMessages(name, message);
-    console.log("Messages sent to Groq:", JSON.stringify(messages, null, 2));
     const groqResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -331,6 +329,17 @@ app.post("/support", async (req, res) => {
   } catch (err) {
     console.error("Support error:", err);
     res.status(500).json({ error: "Failed to process message" });
+  }
+});
+app.get("/test-groq", async (req, res) => {
+  try {
+    const testRes = await fetch("https://api.groq.com/openai/v1/models", {
+      headers: { "Authorization": `Bearer ${process.env.GROQ_API_KEY}` }
+    });
+    const data = await testRes.json();
+    res.json({ success: true, models: data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
