@@ -95,9 +95,24 @@ function mongoSanitizeCustom(req, res, next) {
 
 app.use(mongoSanitizeCustom);
 
+app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
-app.use("/uploads", express.static(path.join(process.cwd(), "uploads")))
+// =======================================================
+// ✅ UPDATED EMAIL TRANSPORTER (SendGrid API instead of SMTP)
+// =======================================================
 
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+
+const transporter = {
+  sendMail: async ({ from, to, subject, html }) => {
+    return sgMail.send({
+      to,
+      from,
+      subject,
+      html,
+    });
+  },
+};
 
 
 // 4. MULTER SETUP (file upload handling)
@@ -855,6 +870,4 @@ app.get("/account", authenticate, (req, res) => {
 app.listen(port, () => {
   console.log(`Backend running on port ${port}`);
 });
-
-
-
+ 
