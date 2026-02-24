@@ -104,21 +104,21 @@ app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
 // Helper function (use this everywhere instead of transporter.sendMail)
-async function sendEmail({ to, subject, html }) {
+async function sendEmail({ to, from, subject, html }) {
   try {
     const msg = {
-      to,
-      from: process.env.EMAIL_USER, // Must be your VERIFIED sender
-      subject,
-      html,
-      text: html.replace(/<[^>]*>/g, ''), // fallback plain text
+      to: [{ email: to }],          // ← Must be an array of objects
+      from: from,
+      subject: subject,
+      html: html,
+      text: html.replace(/<[^>]*>/g, ""), // optional plain-text fallback
     };
 
     await sgMail.send(msg);
     console.log(`Email sent successfully to ${to}`);
   } catch (error) {
-    console.error('SendGrid send error:', error.response ? error.response.body : error);
-    throw error; // re-throw so route can catch and respond
+    console.error("SendGrid send error:", error.response ? error.response.body : error);
+    throw error;
   }
 }
 
