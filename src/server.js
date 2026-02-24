@@ -335,7 +335,6 @@ app.post("/support", async (req, res) => {
 
     const data = await groqResponse.json();
     const reply = data.choices[0].message.content.trim();
-    console.log("Groq generated reply:", reply.substring(0, 200) + "...");
 
     // Optional: Send email
     await sendEmail({
