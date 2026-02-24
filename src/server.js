@@ -103,17 +103,24 @@ app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
-const transporter = {
-  sendMail: async ({ from, to, subject, html }) => {
-    return sgMail.send({
+// Helper function (use this everywhere instead of transporter.sendMail)
+async function sendEmail({ to, subject, html }) {
+  try {
+    const msg = {
       to,
-      from,
+      from: process.env.EMAIL_USER, // Must be your VERIFIED sender
       subject,
       html,
-    });
-  },
-};
+      text: html.replace(/<[^>]*>/g, ''), // fallback plain text
+    };
 
+    await sgMail.send(msg);
+    console.log(`Email sent successfully to ${to}`);
+  } catch (error) {
+    console.error('SendGrid send error:', error.response ? error.response.body : error);
+    throw error; // re-throw so route can catch and respond
+  }
+}
 
 // 4. MULTER SETUP (file upload handling)
 const storage = multer.diskStorage({
@@ -218,7 +225,7 @@ app.post("/signup", [
     });
     // Send welcome email
 
-    await transporter.sendMail({
+    await sendEmail({
       from: `"TrustedFinance Support" <${process.env.EMAIL_USER}>`,
       to: email,
       subject: 'Welcome to TrustedFinance.biz!',
@@ -304,7 +311,7 @@ app.post("/support", async (req, res) => {
     const reply = data.choices[0].message.content.trim();
 
     // Optional: Send email
-    await transporter.sendMail({
+    await sendEmail({
       from: `"TrustedFinance Support" <${process.env.EMAIL_USER}>`,
       to: email,
       subject: "TrustedFinance Support - Your Message",
@@ -478,7 +485,7 @@ app.post('/forgot-password', authLimiter, async (req, res) => {
     // Send email
     const resetUrl = `https://trusted-finance.biz/reset-password?token=${resetToken}`;
 
-    await transporter.sendMail({
+    await sendEmail({
       from: `"TrustedFinance Support" <${process.env.EMAIL_USER}>`,
       to: email,
       subject: 'Reset Your TrustedFinance.biz Password',
@@ -586,7 +593,7 @@ app.post("/deposit", authenticate, async (req, res) => {
   ]
 );
     res.json({ success: true, message: "Deposit submitted successfully." });
-    await transporter.sendMail({
+    await sendEmail({
       from: `"TrustedFinance" <${process.env.EMAIL_USER}>`,
       to: req.user.email,
       subject: 'Your Deposit is Being Processed',
@@ -633,7 +640,7 @@ app.get("/confirm-deposit", authenticate, async (req, res) => {
         [req.user.username]
       );
       if (plan.rows[0].confirmed_deposit !== plan.rows[0].deposit_amount) {
-          await transporter.sendMail({
+          await sendEmail({
           from: `"TrustedFinance" <${process.env.EMAIL_USER}>`,
           to: req.user.email,
           subject: 'Deposit Confirmation Failed',
@@ -675,7 +682,7 @@ let level = userReferralLevel; // Start from the user's current referral level
         "INSERT INTO transactions (user_id, type, amount, description, metadata) VALUES ($1, 'referral_bonus', $2, 'Level 1 referral bonus', $3)",
         [refUser.id, bonusAmount, JSON.stringify({ level: level + 1, from_user: req.user.username, from_deposit: plan.rows[0].confirmed_deposit })]
       );
-      await transporter.sendMail({
+      await sendEmail({
         from: `"TrustedFinance" <${process.env.EMAIL_USER}>`,
         to: refUser.email,
         subject: 'Referral Bonus Received',
@@ -706,7 +713,7 @@ let level = userReferralLevel; // Start from the user's current referral level
       console.log("Global miners object:", Object.keys(global.miners));
 
       console.log("CryptoMiner plan created for user", req.user.username, miner);
-      await transporter.sendMail({
+      await sendEmail({
         from: `"TrustedFinance" <${process.env.EMAIL_USER}>`,
         to: req.user.email,
         subject: 'Your Deposit is Confirmed',
@@ -766,7 +773,7 @@ app.post("/api/miner/withdraw", authenticate, async (req, res) => {
     [req.user.id, amount, `with_${Math.floor(Math.random() * 100000)}`]
   );
 
-  await transporter.sendMail({
+  await sendEmail({
     from: `"TrustedFinance" <${process.env.EMAIL_USER}>`,
     to: req.user.email,
     subject: 'Withdrawal Successful',
