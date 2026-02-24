@@ -105,20 +105,42 @@ sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
 // Helper function (use this everywhere instead of transporter.sendMail)
 async function sendEmail({ to, from, subject, html }) {
+  if (!to || !to.includes('@')) {
+    console.error("Invalid recipient email:", to);
+    return false;
+  }
+
+  if (!from || !from.includes('@')) {
+    console.error("Invalid sender email:", from);
+    return false;
+  }
+
   try {
     const msg = {
-      to: [{ email: to }],          // ← Must be an array of objects
-      from: from,
-      subject: subject,
-      html: html,
-      text: html.replace(/<[^>]*>/g, ""), // optional plain-text fallback
+      to: [{ email: to.trim() }],
+      from: from.trim(),
+      subject: subject.trim(),
+      html: html || "<p>No content</p>",
+      text: (html || "").replace(/<[^>]*>/g, "").substring(0, 1000) // fallback
     };
 
-    await sgMail.send(msg);
-    console.log(`Email sent successfully to ${to}`);
+    console.log("SendGrid payload prepared:", {
+      to: msg.to[0].email,
+      from: msg.from,
+      subject: msg.subject.substring(0, 50) + "..."
+    });
+
+    const response = await sgMail.send(msg);
+    console.log("SendGrid success response:", response);
+
+    return true;
   } catch (error) {
-    console.error("SendGrid send error:", error.response ? error.response.body : error);
-    throw error;
+    console.error("SendGrid full error:", {
+      message: error.message,
+      response: error.response?.body,
+      code: error.code
+    });
+    return false;
   }
 }
 
