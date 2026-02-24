@@ -304,7 +304,11 @@ app.post("/support", async (req, res) => {
     });
 
     if (!groqResponse.ok) {
-      throw new Error(`Groq error: ${groqResponse.status}`);
+  const errorBody = await groqResponse.text();
+  console.error("Groq error status:", groqResponse.status);
+  console.error("Groq error body:", errorBody);
+  throw new Error(`Groq error: ${groqResponse.status} - ${errorBody}`);
+
     }
 
     const data = await groqResponse.json();
