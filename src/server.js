@@ -120,14 +120,15 @@ app.use("/uploads", express.static(path.join(process.cwd(), "uploads")))
 
 
 // 4. EMAIL TRANSPORTER
+// Replace your current transporter with this:
 const transporter = nodemailer.createTransport({
-  host: "smtpout.secureserver.net",
-  port: 465,
-  secure: true,
+  host: "smtp.sendgrid.net",
+  port: 587,
+  secure: false,           // important
   auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
+    user: "apikey",        // literally "apikey"
+    pass: process.env.SENDGRID_API_KEY
+  }
 });
 
 transporter.verify((error, success) => {
