@@ -288,6 +288,8 @@ app.post("/support", async (req, res) => {
   const { name, email, message } = req.body;
 
   try {
+    const messages = createGroqMessages(name, message);
+    console.log("Messages sent to Groq:", JSON.stringify(messages, null, 2));
     const groqResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
