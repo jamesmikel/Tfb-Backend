@@ -308,6 +308,7 @@ app.post("/referral", async (req, res) => {
   // In your /support route
 app.post("/support", async (req, res) => {
   const { name, email, message } = req.body;
+  console.log(email);
 
   try {
     const groqResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -339,7 +340,7 @@ app.post("/support", async (req, res) => {
     // Optional: Send email
     await sendEmail({
       from: `"TrustedFinance Support" <${process.env.EMAIL_USER}>`,
-      to: email,
+      to: email.trim(),
       subject: "TrustedFinance Support - Your Message",
       html: reply,
     });
