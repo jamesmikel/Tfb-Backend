@@ -111,22 +111,22 @@ global.miners = global.miners || {};
 function mongoSanitizeCustom(req, res, next) {
   const sanitize = (obj) => {
     if (typeof obj !== "object" || obj === null) return obj;
-    const sanitized = Array.isArray(obj) ? [...obj] : { ...obj };
 
-    for (const key in sanitized) {
+    for (const key of Object.keys(obj)) {
       if (key.startsWith("$") || key.includes(".")) {
-        delete sanitized[key];
-      } else {
-        sanitized[key] = sanitize(sanitized[key]);
+        delete obj[key];
+      } else if (typeof obj[key] === "object" && obj[key] !== null) {
+        sanitize(obj[key]);
       }
     }
 
-    return sanitized;
+    return obj;
   };
 
-  req.body = sanitize(req.body);
-  req.params = sanitize(req.params);
-  req.query = sanitize(req.query);
+  if (req.body) sanitize(req.body);
+  if (req.params) sanitize(req.params);
+  if (req.query) sanitize(req.query);
+
   next();
 }
 
