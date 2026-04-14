@@ -16,6 +16,1046 @@ import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import { CryptoMiner } from "./CryptoMiner.js";
 import { body, validationResult } from "express-validator";
+import sgMail from "@sendgrid/mail";
+
+// 2. CONFIG & ENVIRONMENT
+dotenv.config({ quiet: true });
+
+const app = express();
+app.set("trust proxy", 1);
+
+const port = process.env.PORT || 5000;
+const JWT_SECRET = process.env.JWT_SECRET;
+
+if (!JWT_SECRET) {
+  throw new Error("JWT_SECRET is missing");
+}
+if (!process.env.SENDGRID_API_KEY) {
+  throw new Error("SENDGRID_API_KEY is missing");
+}
+if (!process.env.EMAIL_USER) {
+  throw new Error("EMAIL_USER is missing");
+}
+
+// Hosted trusted-finance.biz setup:
+// frontend: https://trusted-finance.biz
+// backend:  https://api.trusted-finance.biz
+//
+// For this same-site subdomain setup, use Lax + shared parent domain.
+const authCookieOptions = {
+  httpOnly: true,
+  secure: true,
+  sameSite: "lax",
+  domain: "trusted-finance.biz",
+  path: "/",
+  maxAge: 7 * 24 * 60 * 60 * 1000,
+};
+
+const authCookieClearOptions = {
+  httpOnly: true,
+  secure: true,
+  sameSite: "lax",
+  domain: "trusted-finance.biz",
+  path: "/",
+};
+
+// 3. MIDDLEWARE
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      const allowed = [
+        "https://www.trusted-finance.biz",
+        "https://trusted-finance.biz",
+        "https://api.trusted-finance.biz",
+        undefined,
+        null,
+      ];
+
+      if (!origin || allowed.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
+
+app.use(helmet());
+app.use(express.json());
+app.use(cookieParser());
+
+const authLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  message: "Too many login attempts. Try again later.",
+});
+
+const minerLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 120,
+});
+
+app.use((req, res, next) => {
+  console.log(
+    `[${new Date().toISOString()}] ${req.method} ${req.originalUrl} from ${req.ip}`
+  );
+  next();
+});
+
+global.miners = global.miners || {};
+
+// Basic sanitize helper
+function mongoSanitizeCustom(req, res, next) {
+  const sanitize = (obj) => {
+    if (typeof obj !== "object" || obj === null) return obj;
+    const sanitized = Array.isArray(obj) ? [...obj] : { ...obj };
+
+    for (const key in sanitized) {
+      if (key.startsWith("$") || key.includes(".")) {
+        delete sanitized[key];
+      } else {
+        sanitized[key] = sanitize(sanitized[key]);
+      }
+    }
+
+    return sanitized;
+  };
+
+  req.body = sanitize(req.body);
+  req.params = sanitize(req.params);
+  req.query = sanitize(req.query);
+  next();
+}
+
+app.use(mongoSanitizeCustom);
+app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
+
+// 4. EMAIL SETUP
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+
+async function sendEmail({ to, from, subject, html }) {
+  if (!to || !String(to).includes("@")) {
+    console.error("Invalid recipient email:", to);
+    return false;
+  }
+
+  const cleanFrom =
+    typeof from === "string" ? from.trim() : `"TrustedFinance Support" <${process.env.EMAIL_USER}>`;
+
+  try {
+    const msg = {
+      to: [{ email: String(to).trim() }],
+      from: cleanFrom,
+      subject: String(subject || "").trim(),
+      html: html || "<p>No content</p>",
+      text: String(html || "")
+        .replace(/<[^>]*>/g, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .substring(0, 1000),
+    };
+
+    console.log("SendGrid payload prepared:", {
+      to: msg.to[0].email,
+      from: msg.from,
+      subject: msg.subject,
+    });
+
+    await sgMail.send(msg);
+    return true;
+  } catch (error) {
+    console.error("SendGrid full error:", {
+      message: error.message,
+      response: error.response?.body,
+      code: error.code,
+    });
+    return false;
+  }
+}
+
+// 5. MULTER SETUP
+const storage = multer.diskStorage({
+  destination: "./uploads/profile-pics/",
+  filename: (req, file, cb) => {
+    cb(null, `${Date.now()}${path.extname(file.originalname)}`);
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const filetypes = /jpeg|jpg|png/;
+    const extname = filetypes.test(
+      path.extname(file.originalname).toLowerCase()
+    );
+    if (extname) return cb(null, true);
+    cb(new Error("Error: Images only!"));
+  },
+}).single("profilePic");
+
+// 6. AUTH HELPERS
+function buildJwtPayload(user, refCount = 0) {
+  return {
+    id: user.id,
+    full_name: user.full_name,
+    username: user.username,
+    email: user.email,
+    profile_pic: user.profile_pic,
+    referrer: user.referrer,
+    referrals: refCount,
+    created_at: user.created_at,
+    address: {
+      bitcoin: user.bitcoin_address,
+      ethereum: user.ethereum_address,
+      usdt_trc20: user.usdt_trc20_address,
+      tron: user.tron_address,
+      bnb: user.bnb_address,
+    },
+  };
+}
+
+function signUserToken(user, refCount = 0) {
+  return jwt.sign(buildJwtPayload(user, refCount), JWT_SECRET, {
+    expiresIn: "7d",
+  });
+}
+
+const authenticate = (req, res, next) => {
+  const token = req.cookies.auth_token;
+
+  if (!token) {
+    console.log("No auth_token provided. Cookies:", req.cookies);
+    return res.status(401).json({ error: "No token provided" });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    console.error("JWT verification error:", err.message);
+    return res.status(401).json({ error: "Invalid or expired token" });
+  }
+};
+
+// 7. ROUTES
+
+// Signup
+app.post(
+  "/signup",
+  [
+    body("email").isEmail().normalizeEmail(),
+    body("username").isLength({ min: 3, max: 20 }).trim().escape(),
+    body("password")
+      .isLength({ min: 8 })
+      .withMessage("Password must be at least 8 chars"),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    try {
+      const {
+        fullname,
+        username,
+        email,
+        password,
+        bitcoinWallet,
+        ethWallet,
+        usdtTRC20Wallet,
+        tronWallet,
+        bnbWallet,
+        Referrer,
+      } = req.body;
+
+      const passwordHash = await bcrypt.hash(password, 10);
+
+      const result = await pool.query(
+        `INSERT INTO users (
+          full_name, username, email, password_hash,
+          bitcoin_address, ethereum_address, usdt_trc20_address,
+          tron_address, bnb_address, referrer
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING id, username, email, full_name`,
+        [
+          fullname || null,
+          username.toLowerCase(),
+          email.toLowerCase(),
+          passwordHash,
+          bitcoinWallet || null,
+          ethWallet || null,
+          usdtTRC20Wallet || null,
+          tronWallet || null,
+          bnbWallet || null,
+          Referrer || null,
+        ]
+      );
+
+      authLimiter.resetKey(req.ip);
+
+      const newUser = result.rows[0];
+
+      const token = jwt.sign(
+        {
+          id: newUser.id,
+          full_name: newUser.full_name,
+          username: newUser.username,
+          email: newUser.email,
+        },
+        JWT_SECRET,
+        { expiresIn: "7d" }
+      );
+
+      res.cookie("auth_token", token, authCookieOptions);
+
+      res.status(201).json({
+        message: "User registered successfully!",
+        user: {
+          id: newUser.id,
+          username: newUser.username,
+          email: newUser.email,
+          full_name: newUser.full_name,
+        },
+      });
+
+      await sendEmail({
+        from: `"TrustedFinance Support" <${process.env.EMAIL_USER}>`,
+        to: email,
+        subject: "Welcome to TrustedFinance.biz!",
+        html: `
+          <p>Dear ${newUser.full_name || "User"},</p>
+          <p>Thank you for joining TrustedFinance.biz!</p>
+          <p>Your account has been successfully created with the email: ${newUser.email}.</p>
+          <p>You can now log in and start exploring our platform:</p>
+          <a href="https://trusted-finance.biz/login" style="padding: 10px 20px; background: #07091a; color: white; text-decoration: none; border-radius: 8px;">
+            Login to TrustedFinance
+          </a>
+          <p>Quick tips to get started:</p>
+          <ul>
+            <li>Complete your profile and add your profile picture</li>
+            <li>Join the referral program and invite friends</li>
+          </ul>
+          <p>If you have any questions, our support team is here 24/7.</p>
+          <p>Happy trading!</p>
+          <p>Best regards,<br>TrustedFinance.biz<br>admin@trusted-finance.biz</p>
+          <small>https://trusted-finance.biz</small>
+        `,
+      });
+    } catch (err) {
+      console.error("Signup error:", err);
+
+      if (err.code === "23505") {
+        let message = "Username or email already exists";
+        if (err.detail?.includes("username")) message = "This username is already taken";
+        if (err.detail?.includes("email")) message = "This email is already registered";
+        return res.status(409).json({ error: message });
+      }
+
+      return res.status(500).json({ error: "Server error" });
+    }
+  }
+);
+
+// Referral lookup
+app.post("/referral", async (req, res) => {
+  const { ref } = req.body;
+
+  try {
+    const result = await pool.query(
+      "SELECT * FROM users WHERE username = $1",
+      [String(ref || "").toLowerCase()]
+    );
+
+    const user = result.rows[0];
+
+    if (!user) {
+      return res.status(404).json({ error: "Referrer not found" });
+    }
+
+    res.json({
+      user: {
+        id: user.id,
+        username: user.username,
+        full_name: user.full_name,
+      },
+    });
+  } catch (err) {
+    console.error("Referral lookup error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Support
+app.post("/support", async (req, res) => {
+  const { name, email, message } = req.body;
+
+  try {
+    const groqResponse = await fetch(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "llama-3.1-8b-instant",
+          messages: createGroqMessages(name, message),
+          temperature: 0.6,
+          max_tokens: 600,
+          top_p: 0.9,
+        }),
+      }
+    );
+
+    if (!groqResponse.ok) {
+      const errorBody = await groqResponse.text();
+      console.error("Groq error status:", groqResponse.status);
+      console.error("Groq error body:", errorBody);
+      throw new Error(`Groq error: ${groqResponse.status} - ${errorBody}`);
+    }
+
+    const data = await groqResponse.json();
+    const reply = data.choices?.[0]?.message?.content?.trim() || "<p>Support reply unavailable.</p>";
+
+    await sendEmail({
+      from: `"TrustedFinance Support" <${process.env.EMAIL_USER}>`,
+      to: String(email || "").trim(),
+      subject: "TrustedFinance Support - Your Message",
+      html: reply,
+    });
+
+    res.status(200).json({
+      message: "Support message processed successfully!",
+      reply,
+    });
+  } catch (err) {
+    console.error("Support error:", err);
+    res.status(500).json({ error: "Failed to process message" });
+  }
+});
+
+// Login
+app.post("/login", authLimiter, async (req, res) => {
+  const { username, password } = req.body;
+
+  try {
+    const result = await pool.query(
+      "SELECT * FROM users WHERE username = $1",
+      [String(username || "").toLowerCase()]
+    );
+
+    const user = result.rows[0];
+
+    if (!user || !(await bcrypt.compare(password, user.password_hash))) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+
+    authLimiter.resetKey(req.ip);
+
+    const referrals = await pool.query(
+      "SELECT * FROM users WHERE referrer = $1",
+      [user.username]
+    );
+
+    const refCount = referrals.rows.length;
+    const token = signUserToken(user, refCount);
+
+    res.cookie("auth_token", token, authCookieOptions);
+
+    res.json({
+      message: "Logged in successfully",
+      user: { id: user.id, username: user.username },
+    });
+  } catch (err) {
+    console.error("Login error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Logout
+app.post("/logout", (req, res) => {
+  res.clearCookie("auth_token", authCookieClearOptions);
+  res.json({ message: "Logged out" });
+});
+
+// Edit account
+app.post("/edit-account", authenticate, async (req, res) => {
+  const {
+    fullname,
+    username,
+    email,
+    password,
+    bitcoinWallet,
+    ethWallet,
+    usdtTRC20Wallet,
+    tronWallet,
+    bnbWallet,
+  } = req.body;
+
+  try {
+    const fields = [];
+    const values = [];
+    let idx = 1;
+
+    if (fullname !== undefined) {
+      fields.push(`full_name = $${idx++}`);
+      values.push(fullname || null);
+    }
+
+    if (username !== undefined) {
+      fields.push(`username = $${idx++}`);
+      values.push(String(username).toLowerCase());
+    }
+
+    if (email !== undefined) {
+      fields.push(`email = $${idx++}`);
+      values.push(String(email).toLowerCase());
+    }
+
+    if (password) {
+      const passwordHash = await bcrypt.hash(password, 10);
+      fields.push(`password_hash = $${idx++}`);
+      values.push(passwordHash);
+    }
+
+    if (bitcoinWallet !== undefined) {
+      fields.push(`bitcoin_address = $${idx++}`);
+      values.push(bitcoinWallet || null);
+    }
+
+    if (ethWallet !== undefined) {
+      fields.push(`ethereum_address = $${idx++}`);
+      values.push(ethWallet || null);
+    }
+
+    if (usdtTRC20Wallet !== undefined) {
+      fields.push(`usdt_trc20_address = $${idx++}`);
+      values.push(usdtTRC20Wallet || null);
+    }
+
+    if (tronWallet !== undefined) {
+      fields.push(`tron_address = $${idx++}`);
+      values.push(tronWallet || null);
+    }
+
+    if (bnbWallet !== undefined) {
+      fields.push(`bnb_address = $${idx++}`);
+      values.push(bnbWallet || null);
+    }
+
+    if (!fields.length) {
+      return res.status(400).json({ error: "No update fields provided" });
+    }
+
+    values.push(req.user.id);
+
+    await pool.query(
+      `UPDATE users SET ${fields.join(", ")} WHERE id = $${idx}`,
+      values
+    );
+
+    res.json({ message: "Account updated successfully" });
+  } catch (err) {
+    console.error("Edit account error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Forgot Password – Send Reset Link
+app.post("/forgot-password", authLimiter, async (req, res) => {
+  const { email } = req.body;
+
+  try {
+    const result = await pool.query("SELECT * FROM users WHERE email = $1", [
+      String(email || "").toLowerCase(),
+    ]);
+
+    const user = result.rows[0];
+
+    if (!user) {
+      return res
+        .status(200)
+        .json({ message: "If the email exists, a reset link has been sent." });
+    }
+
+    const resetToken = crypto.randomBytes(32).toString("hex");
+    const hashedToken = await bcrypt.hash(resetToken, 10);
+    const resetExpires = Date.now() + 60 * 60 * 1000;
+
+    await pool.query(
+      "UPDATE users SET reset_token = $1, reset_expires = $2 WHERE id = $3",
+      [hashedToken, resetExpires, user.id]
+    );
+
+    const resetUrl = `https://trusted-finance.biz/reset-password?token=${resetToken}`;
+
+    await sendEmail({
+      from: `"TrustedFinance Support" <${process.env.EMAIL_USER}>`,
+      to: email,
+      subject: "Reset Your TrustedFinance.biz Password",
+      html: `
+        <p>Dear ${user.full_name || "User"},</p>
+        <p>We received a request to reset your password.</p>
+        <p>Click the link below to reset it (expires in 60 minutes):</p>
+        <a href="${resetUrl}" style="padding: 10px 20px; background: #02030b; color: white; text-decoration: none; border-radius: 8px;">
+          Reset Password
+        </a>
+        <p>If you didn't request this, ignore this email — your account is safe.</p>
+        <p>For security: Never share this link.</p>
+        <p>Best regards,<br>TrustedFinance Support Team</p>
+        <small>https://trusted-finance.biz</small>
+      `,
+    });
+
+    authLimiter.resetKey(req.ip);
+
+    res.status(200).json({
+      message: "If the email exists, a reset link has been sent.",
+    });
+  } catch (err) {
+    console.error("Forgot password error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Reset Password
+app.post("/reset-password", async (req, res) => {
+  const { token, newPassword } = req.body;
+
+  if (!token || !newPassword || newPassword.length < 8) {
+    return res
+      .status(400)
+      .json({ error: "Invalid request or password too short" });
+  }
+
+  try {
+    const result = await pool.query(
+      "SELECT * FROM users WHERE reset_expires > $1 AND reset_token IS NOT NULL",
+      [Date.now()]
+    );
+
+    const users = result.rows;
+    let matchedUser = null;
+
+    for (const user of users) {
+      const matches = await bcrypt.compare(token, user.reset_token);
+      if (matches) {
+        matchedUser = user;
+        break;
+      }
+    }
+
+    if (!matchedUser) {
+      return res.status(401).json({ error: "Invalid or expired reset token" });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    await pool.query(
+      "UPDATE users SET password_hash = $1, reset_token = NULL, reset_expires = NULL WHERE id = $2",
+      [hashedPassword, matchedUser.id]
+    );
+
+    res.status(200).json({
+      message: "Password reset successful. Please log in.",
+    });
+  } catch (err) {
+    console.error("Reset password error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Upload profile picture
+app.post("/api/upload-profile-pic", authenticate, (req, res) => {
+  upload(req, res, async (err) => {
+    try {
+      if (err) return res.status(400).json({ error: err.message });
+      if (!req.file) {
+        return res.status(400).json({ error: "No file uploaded" });
+      }
+
+      const fileName = req.file.filename;
+      const imageUrl = `${req.protocol}://${req.get(
+        "host"
+      )}/uploads/profile-pics/${fileName}`;
+
+      await pool.query("UPDATE users SET profile_pic = $1 WHERE id = $2", [
+        imageUrl,
+        req.user.id,
+      ]);
+
+      res.json({ success: true, imageUrl });
+    } catch (uploadErr) {
+      console.error("Upload profile pic error:", uploadErr);
+      res.status(500).json({ error: "Upload failed" });
+    }
+  });
+});
+
+// Deposit
+app.post("/deposit", authenticate, async (req, res) => {
+  const { DepositAmount, ProposedPercent, ProposedTime } = req.body;
+
+  try {
+    await pool.query(
+      "INSERT INTO user_deposits (id, user_id, deposit_amount, proposedpercent, proposedtime) VALUES ($1, $2, $3, $4, $5)",
+      [req.user.id, req.user.username, DepositAmount, ProposedPercent, ProposedTime]
+    );
+
+    await pool.query(
+      `INSERT INTO transactions 
+       (user_id, type, amount, description, reference, metadata) 
+       VALUES ($1, 'mining_plan', $2, $3, $4, $5)`,
+      [
+        req.user.id,
+        DepositAmount,
+        `${ProposedPercent * 100}% After ${ProposedTime / 3600000} hours`,
+        `dep_${Math.floor(Math.random() * 100000)}`,
+        JSON.stringify({
+          plan: `${ProposedPercent * 100}% After ${ProposedTime / 3600000} hours`,
+          proposedPercent: ProposedPercent,
+          proposedTime: ProposedTime,
+        }),
+      ]
+    );
+
+    res.json({ success: true, message: "Deposit submitted successfully." });
+
+    await sendEmail({
+      from: `"TrustedFinance" <${process.env.EMAIL_USER}>`,
+      to: req.user.email,
+      subject: "Your Deposit is Being Processed",
+      html: `
+        <p>Dear ${req.user.full_name || "User"},</p>
+        <p>We received a request to process a deposit for your account.</p>
+        <p>Your deposit of $${DepositAmount} is being processed with the following details:</p>
+        <ul>
+          <li>Proposed Interest Rate: ${ProposedPercent * 100}%</li>
+          <li>Proposed Time Period: ${ProposedTime / 3600000} hours</li>
+        </ul>
+        <p>Please allow up to 24 hours for processing.</p>
+        <p>If you have any questions, contact our support team.</p>
+        <p>Best regards,<br>TrustedFinance Support Team</p>
+        <small>https://trusted-finance.biz</small>
+      `,
+    });
+  } catch (err) {
+    if (err.code === "23505") {
+      return res
+        .status(409)
+        .json({ error: "A deposit is currently being processed for this user." });
+    }
+
+    console.error("Deposit error:", err);
+    res.status(500).json({ error: "Failed to submit deposit." });
+  }
+});
+
+// Confirm deposit
+app.get("/confirm-deposit", authenticate, async (req, res) => {
+  try {
+    const userDeposit = await pool.query(
+      "SELECT confirmed_deposit FROM user_deposits WHERE user_id = $1",
+      [req.user.username]
+    );
+
+    if (!userDeposit.rows[0]) {
+      return res.status(404).json({ error: "No deposit found for this user." });
+    }
+
+    const plan = await pool.query(
+      "SELECT * FROM user_deposits WHERE user_id = $1",
+      [req.user.username]
+    );
+
+    const depositPlan = plan.rows[0];
+
+    if (depositPlan.confirmed_deposit !== depositPlan.deposit_amount) {
+      await sendEmail({
+        from: `"TrustedFinance" <${process.env.EMAIL_USER}>`,
+        to: req.user.email,
+        subject: "Deposit Confirmation Failed",
+        html: `
+          <p>Dear ${req.user.full_name || "User"},</p>
+          <p>We regret to inform you that there was an issue confirming your deposit of $${depositPlan.deposit_amount}.</p>
+          <p>Please ensure that the deposit amount is correct and try again. If the issue persists, contact our support team for assistance.</p>
+          <p>Best regards,<br>TrustedFinance Support Team</p>
+          <small>https://trusted-finance.biz</small>
+        `,
+      });
+
+      return res
+        .status(400)
+        .json({ error: "Deposit confirmation failed. Please try again." });
+    }
+
+    await pool.query(
+      "INSERT INTO transactions (user_id, type, amount, description, reference) VALUES ($1, 'deposit', $2, 'Bitcoin deposit confirmed', $3)",
+      [req.user.id, depositPlan.confirmed_deposit, `dep_${Math.floor(Math.random() * 100000)}`]
+    );
+
+    const referralBonus = [0.08, 0.05, 0.02];
+
+    try {
+      let currentReferrer = req.user.referrer;
+
+      const userResult = await pool.query(
+        "SELECT referral_level FROM user_deposits WHERE user_id = $1",
+        [currentReferrer]
+      );
+
+      let level = userResult.rows[0]?.referral_level || 0;
+
+      while (currentReferrer && level < referralBonus.length) {
+        const refResult = await pool.query(
+          "SELECT * FROM users WHERE username = $1",
+          [currentReferrer]
+        );
+        if (refResult.rows.length === 0) break;
+
+        const refUser = refResult.rows[0];
+        const bonusRate = referralBonus[level];
+        const bonusAmount = depositPlan.confirmed_deposit * bonusRate;
+
+        await pool.query(
+          "INSERT INTO transactions (user_id, type, amount, description, metadata) VALUES ($1, 'referral_bonus', $2, 'Level 1 referral bonus', $3)",
+          [
+            refUser.id,
+            bonusAmount,
+            JSON.stringify({
+              level: level + 1,
+              from_user: req.user.username,
+              from_deposit: depositPlan.confirmed_deposit,
+            }),
+          ]
+        );
+
+        await sendEmail({
+          from: `"TrustedFinance" <${process.env.EMAIL_USER}>`,
+          to: refUser.email,
+          subject: "Referral Bonus Received",
+          html: `
+            <p>Dear ${currentReferrer || "User"},</p>
+            <p>You have received a referral bonus of $${bonusAmount.toFixed(2)} for referring a new user.</p>
+            <p>Level ${level + 1}</p>
+            <p>Best regards,<br>TrustedFinance Support Team</p>
+            <small>https://trusted-finance.biz</small>
+          `,
+        });
+
+        await pool.query(
+          "UPDATE user_deposits SET referral_level = referral_level + 1 WHERE user_id = $1",
+          [currentReferrer]
+        );
+
+        currentReferrer = refUser.referrer;
+        level++;
+      }
+    } catch (err) {
+      console.error("Error updating referral bonus:", err);
+    }
+
+    const miner = new CryptoMiner(depositPlan);
+    global.miners[req.user.id] = miner;
+
+    console.log("Global miners object:", Object.keys(global.miners));
+    console.log("CryptoMiner plan created for user", req.user.username, miner);
+
+    await sendEmail({
+      from: `"TrustedFinance" <${process.env.EMAIL_USER}>`,
+      to: req.user.email,
+      subject: "Your Deposit is Confirmed",
+      html: `
+        <p>Dear ${req.user.full_name || "User"},</p>
+        <p>Your deposit has been confirmed and is now being operated.</p>
+        <p>Details:</p>
+        <ul>
+          <li>Amount: $${depositPlan.confirmed_deposit}</li>
+          <li>Proposed Interest Rate: ${depositPlan.proposedpercent * 100}%</li>
+          <li>Proposed Time Period: ${depositPlan.proposedtime / 3600000} hours</li>
+        </ul>
+        <p>Please allow up to 24 hours for processing.</p>
+        <p>If you have any questions, contact our support team.</p>
+        <p>Best regards,<br>TrustedFinance Support Team</p>
+        <small>https://trusted-finance.biz</small>
+      `,
+    });
+
+    await pool.query("DELETE FROM user_deposits WHERE user_id = $1", [
+      req.user.username,
+    ]);
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("Confirm deposit error:", err);
+    res.status(500).json({ error: "Failed to retrieve deposit information." });
+  }
+});
+
+// Miner status
+app.get("/api/miner/status", authenticate, minerLimiter, (req, res) => {
+  const miner = global.miners[req.user.id];
+
+  if (!miner) {
+    return res.status(404).json({ error: "No active mining plan found" });
+  }
+
+  const status = miner.getStatus();
+  res.json(status);
+});
+
+// Withdraw
+app.post("/api/miner/withdraw", authenticate, async (req, res) => {
+  const miner = global.miners[req.user.id];
+
+  if (!miner) {
+    return res.status(404).json({ error: "No active mining plan" });
+  }
+
+  try {
+    const amount = miner.withdraw();
+
+    await pool.query(
+      "INSERT INTO transactions (user_id, type, amount, description, reference) VALUES ($1, 'withdrawal', $2, 'User withdrawal', $3)",
+      [req.user.id, amount, `with_${Math.floor(Math.random() * 100000)}`]
+    );
+
+    await sendEmail({
+      from: `"TrustedFinance" <${process.env.EMAIL_USER}>`,
+      to: req.user.email,
+      subject: "Withdrawal Successful",
+      html: `
+        <p>Dear ${req.user.full_name || "User"},</p>
+        <p>Your withdrawal has been processed successfully.</p>
+        <p>Thank you for using TrustedFinance.</p>
+        <p>Best regards,<br>TrustedFinance Support Team</p>
+        <small>https://trusted-finance.biz</small>
+      `,
+    });
+
+    delete global.miners[req.user.id];
+
+    res.json({ success: true, amount });
+    authLimiter.resetKey(req.ip);
+  } catch (err) {
+    console.error("Withdraw error:", err);
+    res.status(500).json({ error: "Withdrawal failed" });
+  }
+});
+
+// Get Transaction History
+app.get("/api/transactions", authenticate, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 20;
+    const offset = (page - 1) * limit;
+
+    const result = await pool.query(
+      `SELECT 
+          id, 
+          type, 
+          amount, 
+          currency, 
+          description, 
+          reference, 
+          metadata, 
+          created_at 
+       FROM transactions 
+       WHERE user_id = $1 
+       ORDER BY created_at DESC 
+       LIMIT $2 OFFSET $3`,
+      [req.user.id, limit, offset]
+    );
+
+    const countResult = await pool.query(
+      "SELECT COUNT(*) FROM transactions WHERE user_id = $1",
+      [req.user.id]
+    );
+
+    const total = parseInt(countResult.rows[0].count, 10);
+
+    res.json({
+      success: true,
+      transactions: result.rows,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      },
+    });
+
+    authLimiter.resetKey(req.ip);
+  } catch (err) {
+    console.error("Transaction history error:", err);
+    res.status(500).json({ error: "Failed to fetch transaction history" });
+  }
+});
+
+// Admin
+app.get("/admin", authenticate, async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM users WHERE username = $1",
+      ["admin"]
+    );
+
+    const adminUser = result.rows[0];
+
+    res.status(200).json({
+      success: true,
+      message: "Admin access granted.",
+      user: adminUser,
+    });
+
+    authLimiter.resetKey(req.ip);
+  } catch (err) {
+    console.error("Admin access error:", err);
+    res.status(500).json({ error: "Failed to verify admin access." });
+  }
+});
+
+// Account
+app.get("/account", authenticate, (req, res) => {
+  console.log("Authenticated user:", req.user);
+
+  res.json({
+    message: "Welcome to your account!",
+    user: req.user,
+    ip: req.ip,
+  });
+
+  authLimiter.resetKey(req.ip);
+});
+
+// Start server
+app.listen(port, () => {
+  console.log(`Backend running on port ${port}`);
+});// server.js
+
+// 1. IMPORTS
+import express from "express";
+import bcrypt from "bcrypt";
+import { pool } from "./db.js";
+import cors from "cors";
+import cookieParser from "cookie-parser";
+import multer from "multer";
+import path from "path";
+import jwt from "jsonwebtoken";
+import dotenv from "dotenv";
+import crypto from "crypto";
+import { createGroqMessages } from "./tfb-support.js";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+import { CryptoMiner } from "./CryptoMiner.js";
+import { body, validationResult } from "express-validator";
 import sgMail from "@sendgrid/mail"; // ✅ NEW
 
 // 2. CONFIG & ENVIRONMENT
