@@ -46,7 +46,7 @@ const authCookieOptions = {
   httpOnly: true,
   secure: true,
   sameSite: "lax",
-  domain: "trusted-finance.biz",
+  domain: ".trusted-finance.biz",
   path: "/",
   maxAge: 7 * 24 * 60 * 60 * 1000,
 };
@@ -55,7 +55,7 @@ const authCookieClearOptions = {
   httpOnly: true,
   secure: true,
   sameSite: "lax",
-  domain: "trusted-finance.biz",
+  domain: ".trusted-finance.biz",
   path: "/",
 };
 
